@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SPARTA Gate In Controller</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="/assets/style.css">
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+  </head>
+  <body>
+    <div class="main-wrapper">
+        <div class="top-bar">
+            <span>Firmware version: v1.0</span>
+            <a href="" style="text-decoration: underline; cursor: pointer;">EN</a>
+        </div>
+        
+        <div class="header">
+            <div class="logo-area">
+                <svg class="logo-svg" viewBox="0 0 100 100">
+                    <rect width="100" height="100" rx="10" fill="#006699" stroke="#ffffff" stroke-width="2"/>
+                    <circle cx="50" cy="25" r="14" fill="#ff6600"/>
+                    <path d="M50 42 L50 70 M30 55 L50 42 L70 55 M40 95 L50 70 L60 95 M30 65 L30 55 M70 65 L70 55" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                    <circle cx="85" cy="15" r="5" fill="none" stroke="#ffffff" stroke-width="2"/>
+                    <text x="85" y="18" font-family="Arial" font-size="6" fill="#ffffff" text-anchor="middle">R</text>
+                </svg>
+                <div class="logo-text">
+                    <h1>SPARTA</h1>
+                    <p>Gate Control System</p>
+                </div>
+            </div>
+            <div class="slogan">
+                Open the Door to Success!
+            </div>
+        </div>
+
+        <div class="content-area">
+            <div class="sidebar-left">
+                <a href="#" class="nav-link active" data-target="current-status-view">Current Status</a>
+                <a href="#" class="nav-link" data-target="device-config-view">Device Config</a>
+                <!-- <a href="#">Reboot</a> -->
+            </div>
+            
+            <div class="main-content">
+                <div class="status-box" id="current-status-view">
+                    <table class="status-table">
+                        <!-- <thead>
+                            <tr>
+                                <th>Parameter</th>
+                                <th>Value</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead> -->
+                        <tbody>
+                            <tr>
+                                <td>Name Device</td>
+                                <td>: {{DEVICE_NAME}}</td>
+                                <td style="text-align: center;">
+                                    <span id="status-device" class="badge bg-danger">
+                                        Disconnected
+                                    </span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>IP Address</td>
+                                <td colspan="2">: <span id="val-ip">Memuat...</span></td>
+                            </tr>
+                            <tr>
+                                <td>Nama Gate</td>
+                                <td colspan="2">: {{NAMA_GATE}}</td>
+                            </tr>
+                            <tr>
+                                <td>Jenis Golongan</td>
+                                <td colspan="2">: {{NAMA_GOLONGAN}}</td>
+                            </tr>
+                            <tr>
+                                <td>Jenis Tarif</td>
+                                <td colspan="2">: {{NAMA_TARIF}}</td>
+                            </tr>
+                            <tr>
+                                <td>Controller IP/TX/RX</td>
+                                <td>: <a href="http://{{CONTROLLER_IP}}" target="_blank">{{CONTROLLER_IP}}</a> <span id="controller-latency" style="margin-left: 10px;"></span></td>
+                                <td style="text-align: center;">
+                                    <span class="badge bg-danger" id="controller-status">Offline</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Controller Port</td>
+                                <td colspan="2">: {{CONTROLLER_PORT}}</td>
+                            </tr>
+                            <tr>
+                                <td>Printer IP/TX/RX</td>
+                                <td>: <a href="http://{{PRINTER_IP}}" target="_blank">{{PRINTER_IP}}</a> <span id="printer-latency" style="margin-left: 10px;"></span></td>
+                                <td style="text-align: center;">
+                                    <span class="badge bg-danger" id="printer-status">Offline</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Printer Port</td>
+                                <td colspan="2">: {{PRINTER_PORT}}</td>
+                            </tr>
+                            <tr>
+                                <td>Camera IP/TX/RX</td>
+                                <td>: <a href="http://{{CAMERA_IP}}" target="_blank">{{CAMERA_IP}}</a> <span id="camera-latency" style="margin-left: 10px;"></span></td>
+                                <td style="text-align: center;">
+                                    <span class="badge bg-danger" id="camera-status">Offline</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Camera Port</td>
+                                <td colspan="2">: {{CAMERA_PORT}}</td>
+                            </tr>
+                            <tr>
+                                <td>Endpoint Server</td>
+                                <td>: <a href="{{ENDPOINT_SERVER}}" target="_blank">{{ENDPOINT_SERVER}}</a> <span id="endpoint-latency" style="margin-left: 10px;"></span></td>
+                                <td style="text-align: center;">
+                                    <span class="badge bg-danger" id="endpoint-status">Offline</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Member</td>
+                                <td colspan="2">: {{MEMBER}}</td>
+                            </tr>
+                            <tr>
+                                <td>Cetak Tiket Member</td>
+                                <td colspan="2">: {{CETAK_TIKET_MEMBER}}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <label for="log-output" class="form-label mt-3">Log Output</label>
+                    <textarea class="form-control" id="log-output" rows="6" readonly style="background-color: #f8f9fa; font-family: monospace;"></textarea>
+                    
+                    <div class="actions mt-4">
+                        <button type="button" class="btn btn-primary btn-sm me-2" id="btn-connect">Connect</button>
+                        <button type="button" class="btn btn-danger btn-sm me-2" id="btn-disconnect">Disconnect</button>
+                        <button type="button" class="btn btn-warning btn-sm me-2" id="btn-reset">Reset</button>
+                        <button type="button" class="btn btn-success btn-sm me-2" id="btn-open-gate">Open Gate</button>
+                        <button type="button" class="btn btn-secondary btn-sm" id="btn-close-gate">Close Gate</button>
+                        <button type="button" class="btn btn-secondary btn-sm" id="btn-test-printer" onclick="printTicket('TESTPRINT123', true)">Test Printer</button>
+                    </div>
+                </div>
+
+                <div class="status-box d-none" id="device-config-view">
+                    <h5 class="mb-4" style="color: #006699; border-bottom: 2px solid #ff6600; padding-bottom: 5px;">Device Configuration</h5>
+                    <form id="form-device-config">
+                        <div class="row mb-3">
+                            <div class="col-md-12">
+                                <label class="form-label fw-bold text-dark">Device Name</label>
+                                <input type="text" class="form-control form-control-sm" name="DEVICE_NAME">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Golongan</label>
+                                <input type="text" class="form-control form-control-sm" name="NAMA_GOLONGAN">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">ID</label>
+                                <input type="text" class="form-control form-control-sm" name="GOLONGAN_ID">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Gate</label>
+                                <input type="text" class="form-control form-control-sm" name="NAMA_GATE">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">ID</label>
+                                <input type="text" class="form-control form-control-sm" name="GATE_ID">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Tarif</label>
+                                <input type="text" class="form-control form-control-sm" name="NAMA_TARIF">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">ID</label>
+                                <input type="text" class="form-control form-control-sm" name="TARIF_ID">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Controller IP</label>
+                                <input type="text" class="form-control form-control-sm" name="CONTROLLER_IP">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">Port</label>
+                                <input type="text" class="form-control form-control-sm" name="CONTROLLER_PORT">
+                            </div>
+                        </div>
+
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Printer IP</label>
+                                <input type="text" class="form-control form-control-sm" name="PRINTER_IP">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">Port</label>
+                                <input type="text" class="form-control form-control-sm" name="PRINTER_PORT">
+                            </div>
+                        </div>
+
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Camera IP</label>
+                                <input type="text" class="form-control form-control-sm" name="CAMERA_IP">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">Port</label>
+                                <input type="text" class="form-control form-control-sm" name="CAMERA_PORT">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label fw-bold text-dark">Camera Username</label>
+                                <input type="text" class="form-control form-control-sm" name="CAMERA_USERNAME">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label fw-bold text-dark">Password</label>
+                                <div class="input-group input-group-sm">
+                                    <input type="password" class="form-control form-control-sm" name="CAMERA_PASSWORD" >
+                                    <button class="btn btn-secondary" type="button" id="toggle-password"><i class="bi bi-eye-slash-fill"></i></button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label fw-bold text-dark">Endpoint Server</label>
+                            <input type="text" class="form-control form-control-sm" name="ENDPOINT_SERVER">
+                        </div>
+
+                        <div class="row mb-3">
+                            <div class="col">
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="checkbox" id="inlineCheckbox1" value="Member" name="MEMBER" checked>
+                                    <label class="form-check-label" for="inlineCheckbox1">Member</label>
+                                </div>
+                            </div>
+                            <div class="col">
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="checkbox" id="inlineCheckbox2" value="Cetak Tiket Member" name="CETAK_TIKET_MEMBER" checked>
+                                    <label class="form-check-label" for="inlineCheckbox2">Cetak Tiket Member</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary" style="background-color: #006699; border-color: #006699;">Save Configuration</button>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="sidebar-right">
+                <ul>
+                    <li>
+                        <strong>Current IP Address:</strong><br>
+                        default IP of module
+                    </li>
+                    <li>
+                        <strong>Remote IP/TX/RX:</strong><br>
+                        IP of server or device connecting with module;reset for disconnect<br>TX/RX:data volume that each server or device communicates with module;reset for disconnect
+                    </li>
+                    <li>
+                        <strong>TX Count/RX Count:</strong><br>
+                        a total of data volume that servers or devices communicate with module;reset for power off
+                    </li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <div>&copy; 2026 Instalasi Teknologi Komunikasi dan Informasi, RSUD Dr. Soetomo. All Rights Reserved</div>
+        </div>
+    </div>
+    
+    
+    <script src="/assets/script.js"></script>
+  </body>
+</html>

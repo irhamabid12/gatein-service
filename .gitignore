@@ -1,0 +1,38 @@
+# Dependencies (Node.js)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.pt
+*.onnx
+
+# Runtime & Generated Data
+logs/
+pictures/
+public/img/plates/
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+# Uncomment baris di bawah jika tidak ingin commit kredensial di config.json:
+# config.json
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
