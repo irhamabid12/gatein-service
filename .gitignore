@@ -24,8 +24,7 @@ public/img/plates/
 .env
 .env.*
 !.env.example
-# Uncomment baris di bawah jika tidak ingin commit kredensial di config.json:
-# config.json
+config.json
 
 # OS & Editor
 .DS_Store
