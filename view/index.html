@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>SPARTA Gate In Controller</title>
+    <title>SPARTA Gate In - {{NAMA_GATE}} ({{GATE_ID}})</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css">
     <link rel="stylesheet" href="/assets/style.css">
@@ -12,11 +12,17 @@
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
   </head>
-  <body>
+  <body data-gate-id="{{GATE_ID}}" data-initial-tab="{{INITIAL_TAB}}">
     <div class="main-wrapper">
         <div class="top-bar">
-            <span>Firmware version: v1.0</span>
-            <a href="" style="text-decoration: underline; cursor: pointer;">EN</a>
+            <span>Firmware version: v2.0 (Multi-Gate)</span>
+            <div class="d-flex align-items-center gap-2">
+                <label for="gate-selector" class="mb-0">Gate:</label>
+                <select id="gate-selector" class="form-select form-select-sm py-0" style="width:auto;min-width:200px;font-size:12px;">
+                    <option value="__server__">Current Status (Server)</option>
+                    <option value="{{GATE_ID}}" selected>{{NAMA_GATE}} ({{GATE_ID}})</option>
+                </select>
+            </div>
         </div>
         
         <div class="header">
@@ -40,13 +46,16 @@
 
         <div class="content-area">
             <div class="sidebar-left">
-                <a href="#" class="nav-link active" data-target="current-status-view">Current Status</a>
-                <a href="#" class="nav-link" data-target="device-config-view">Device Config</a>
+                <a href="/" class="nav-link-server" style="display:block;color:#fff;text-decoration:none;padding:10px 15px;border-bottom:1px solid #fff;font-size:14px;">Current Status</a>
+                <a href="/gate/{{GATE_ID}}" class="nav-link active" data-target="current-status-view">Status Gate</a>
+                <a href="#" class="nav-link" data-target="add-gate-view" style="background:#ff6600;">+ Add Gate</a>
+                <div id="sidebar-gate-list"></div>
                 <!-- <a href="#">Reboot</a> -->
             </div>
             
             <div class="main-content">
                 <div class="status-box" id="current-status-view">
+                    <h6 class="fw-bold mb-2 pb-1" style="color:#006699;border-bottom:2px solid #006699;">Detail Gate: {{NAMA_GATE}} <span class="badge bg-secondary">ID: {{GATE_ID}}</span></h6>
                     <table class="status-table">
                         <!-- <thead>
                             <tr>
@@ -142,12 +151,14 @@
                         <button type="button" class="btn btn-success btn-sm me-2" id="btn-open-gate">Open Gate</button>
                         <button type="button" class="btn btn-secondary btn-sm" id="btn-close-gate">Close Gate</button>
                         <button type="button" class="btn btn-secondary btn-sm" id="btn-test-printer" onclick="printTicket('TESTPRINT123', true)">Test Printer</button>
+                        <button type="button" class="btn btn-warning btn-sm" id="btn-edit-config">Edit Config</button>
                     </div>
                 </div>
 
                 <div class="status-box d-none" id="device-config-view">
-                    <h5 class="mb-4" style="color: #006699; border-bottom: 2px solid #ff6600; padding-bottom: 5px;">Device Configuration</h5>
+                    <h5 class="mb-4" style="color: #006699; border-bottom: 2px solid #ff6600; padding-bottom: 5px;">Edit Config - {{NAMA_GATE}} (ID: {{GATE_ID}})</h5>
                     <form id="form-device-config">
+                        <input type="hidden" name="ORIGINAL_GATE_ID" value="{{GATE_ID}}">
                         <div class="row mb-3">
                             <div class="col-md-12">
                                 <label class="form-label fw-bold text-dark">Device Name</label>
@@ -225,7 +236,7 @@
                                 <label class="form-label fw-bold text-dark">Password</label>
                                 <div class="input-group input-group-sm">
                                     <input type="password" class="form-control form-control-sm" name="CAMERA_PASSWORD" >
-                                    <button class="btn btn-secondary" type="button" id="toggle-password"><i class="bi bi-eye-slash-fill"></i></button>
+                                    <button class="btn btn-secondary toggle-password" type="button"><i class="bi bi-eye-slash-fill"></i></button>
                                 </div>
                             </div>
                         </div>
@@ -251,6 +262,116 @@
                         </div>
 
                         <button type="submit" class="btn btn-primary" style="background-color: #006699; border-color: #006699;">Save Configuration</button>
+                        <button type="button" class="btn btn-outline-danger" id="btn-delete-gate">Hapus Gate Ini</button>
+                    </form>
+                </div>
+
+                <div class="status-box d-none" id="add-gate-view">
+                    <h5 class="mb-4" style="color: #006699; border-bottom: 2px solid #ff6600; padding-bottom: 5px;">Tambah Gate Baru</h5>
+                    <form id="form-add-gate">
+                        <div class="row mb-3">
+                            <div class="col-md-12">
+                                <label class="form-label fw-bold text-dark">Device Name</label>
+                                <input type="text" class="form-control form-control-sm" name="DEVICE_NAME">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Golongan</label>
+                                <input type="text" class="form-control form-control-sm" name="NAMA_GOLONGAN">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">ID</label>
+                                <input type="text" class="form-control form-control-sm" name="GOLONGAN_ID">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Gate</label>
+                                <input type="text" class="form-control form-control-sm" name="NAMA_GATE">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">ID</label>
+                                <input type="text" class="form-control form-control-sm" name="GATE_ID">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Tarif</label>
+                                <input type="text" class="form-control form-control-sm" name="NAMA_TARIF">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">ID</label>
+                                <input type="text" class="form-control form-control-sm" name="TARIF_ID">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Controller IP</label>
+                                <input type="text" class="form-control form-control-sm" name="CONTROLLER_IP">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">Port</label>
+                                <input type="text" class="form-control form-control-sm" name="CONTROLLER_PORT" value="8023">
+                            </div>
+                        </div>
+
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Printer IP</label>
+                                <input type="text" class="form-control form-control-sm" name="PRINTER_IP">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">Port</label>
+                                <input type="text" class="form-control form-control-sm" name="PRINTER_PORT" value="9100">
+                            </div>
+                        </div>
+
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold text-dark">Camera IP</label>
+                                <input type="text" class="form-control form-control-sm" name="CAMERA_IP">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold text-dark">Port</label>
+                                <input type="text" class="form-control form-control-sm" name="CAMERA_PORT" value="80">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label fw-bold text-dark">Camera Username</label>
+                                <input type="text" class="form-control form-control-sm" name="CAMERA_USERNAME">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label fw-bold text-dark">Password</label>
+                                <div class="input-group input-group-sm">
+                                    <input type="password" class="form-control form-control-sm" name="CAMERA_PASSWORD" >
+                                    <button class="btn btn-secondary toggle-password" type="button"><i class="bi bi-eye-slash-fill"></i></button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label fw-bold text-dark">Endpoint Server</label>
+                            <input type="text" class="form-control form-control-sm" name="ENDPOINT_SERVER">
+                        </div>
+
+                        <div class="row mb-3">
+                            <div class="col">
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="checkbox" id="addMember" value="Member" name="MEMBER" checked>
+                                    <label class="form-check-label" for="addMember">Member</label>
+                                </div>
+                            </div>
+                            <div class="col">
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="checkbox" id="addPrintMember" value="Cetak Tiket Member" name="CETAK_TIKET_MEMBER" checked>
+                                    <label class="form-check-label" for="addPrintMember">Cetak Tiket Member</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-success">Simpan &amp; Tambah Gate</button>
                     </form>
                 </div>
             </div>

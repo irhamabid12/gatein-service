@@ -20,25 +20,33 @@ const PICTURE_EXT = ['.jpg', '.jpeg', '.png'];
  *
  * @returns {number} jumlah file yang dihapus
  */
-function cleanOldPictures() {
-    if (!fs.existsSync(PICTURES_DIR)) return 0;
+function cleanOldPictures(dir = PICTURES_DIR, isRoot = true) {
+    if (!fs.existsSync(dir)) return 0;
 
     const limit = Date.now() - PICTURE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
     let deleted = 0;
 
-    for (const fileName of fs.readdirSync(PICTURES_DIR)) {
-        if (!PICTURE_EXT.includes(path.extname(fileName).toLowerCase())) continue;
-
-        const fullPath = path.join(PICTURES_DIR, fileName);
+    // Rekursif: pictures/<nama-gate>/<tanggal>/file.jpg
+    for (const name of fs.readdirSync(dir)) {
+        const fullPath = path.join(dir, name);
         try {
             const stat = fs.statSync(fullPath);
-            if (stat.isFile() && stat.mtimeMs < limit) {
+            if (stat.isDirectory()) {
+                deleted += cleanOldPictures(fullPath, false);
+            } else if (PICTURE_EXT.includes(path.extname(name).toLowerCase()) && stat.mtimeMs < limit) {
                 fs.unlinkSync(fullPath);
                 deleted++;
             }
         } catch (err) {
             logger.log('error', `[CLEANUP] Gagal menghapus ${fullPath}: ${err.message}`);
         }
+    }
+
+    // Hapus folder kosong (kecuali folder root pictures/)
+    if (!isRoot) {
+        try {
+            if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+        } catch (err) { /* abaikan */ }
     }
 
     return deleted;

@@ -1,126 +1,99 @@
-const net = require('net');
-const { printTicket } = require('./printer');
 const logger = require('./logger');
-const config = require('../config.json');
+const { getGateConfig } = require('./configManager');
 
-const { triggerDetection } = require('./yoloWorker');
+// Catatan: Python AI (yoloWorker) sengaja TIDAK di-load di sini agar tidak ikut berjalan.
 
-const { cameraHandler } = require('./camera');
+function resolveConfig(gateIdOrConfig) {
+    if (gateIdOrConfig && typeof gateIdOrConfig === 'object' && gateIdOrConfig.parking_class) {
+        return gateIdOrConfig;
+    }
+    return getGateConfig(gateIdOrConfig);
+}
+
+async function generateNoTicket(rfid = '', gateIdOrConfig = null) {
+    const config = resolveConfig(gateIdOrConfig);
+    if (!config) {
+        logger.log("error", "[PROCESS] Konfigurasi gate tidak ditemukan");
+        return null;
+    }
+
+    const gateId = config.parking_class.gate_id;
+    const url = `${config.endpoint}/api/parkirMasuk`;
+    const payload = rfid
+        ? { gate_masuk_id: gateId, kartu_pelanggan: rfid }
+        : { gate_masuk_id: gateId, golongan_id: config.parking_class.golongan_id, tarif_id: config.parking_class.tarif_id };
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(30000)
+        });
+
+        const result = await response.json();
+
+        if (response.status === 200) return result;
+
+        if (result.status === "ERROR") {
+            logger.log("error", `[Gate ${gateId}] ${result.message} [PAYLOAD]: ${JSON.stringify(payload)}`);
+            return result.message;
+        }
+        logger.log("error", `[Gate ${gateId}] ${JSON.stringify(result)} [PAYLOAD]: ${JSON.stringify(payload)}`);
+        return null;
+    } catch (err) {
+        logger.log("error", `[Gate ${gateId}] ${err.message}`);
+        return null;
+    }
+}
 
 /**
- * Mengirim trigger ke Python worker (melalui child_process)
- * @param {string} trigger - Pesan yang dikirim sebagai trigger (mis. ':A' atau ':R')
- * @param {string} imagePath - Path file gambar dari kamera
- * @returns {Promise<string>} - Respon string dari worker
+ * Update status transaksi parkir di database (misal ketika berhasil generate kode_parkir tapi gagal cetak tiket).
+ * Endpoint: POST ${config.endpoint}/api/parkirMasuk/update-status-transaksi
+ * Parameter: kode_parkir (string) & status (string)
+ *
+ * @param {string} kodeParkir
+ * @param {string} status
+ * @param {string|object|null} gateIdOrConfig
+ * @returns {Promise<object|null>}
  */
-async function triggerPythonDetection(trigger, imagePath) {
+async function updateStatusTransaksi(kodeParkir, status = 'error', gateIdOrConfig = null) {
+    const config = resolveConfig(gateIdOrConfig);
+    if (!config) {
+        logger.log("error", "[PROCESS] Konfigurasi gate tidak ditemukan saat update status transaksi");
+        return null;
+    }
+
+    const gateId = config.parking_class.gate_id;
+    const url = `${config.endpoint}/api/parkirMasuk/update-status-transaksi`;
+    const payload = {
+        kode_parkir: String(kodeParkir),
+        status: String(status)
+    };
+
     try {
-        const response = await triggerDetection(trigger, imagePath);
-        // Ubah jadi string agar sama dengan versi TCP sebelumnya yang return string
-        return JSON.stringify(response);
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(30000)
+        });
+
+        const result = await response.json();
+
+        if (response.status === 200 || result?.status === 'success') {
+            logger.log("info", `[Gate ${gateId}] [UPDATE STATUS] (${result.status}) ${result.message} [PAYLOAD]: ${JSON.stringify(payload)}`);
+        } else if (response.status === 404 || result?.status === 'not_found') {
+            logger.log("warn", `[Gate ${gateId}] [UPDATE STATUS] (${result.status}) ${result.message} [PAYLOAD]: ${JSON.stringify(payload)}`);
+        } else {
+            logger.log("error", `[Gate ${gateId}] [UPDATE STATUS] (${result?.status || response.status}) ${result?.message || JSON.stringify(result)} [PAYLOAD]: ${JSON.stringify(payload)}`);
+        }
+
+        return result;
     } catch (err) {
-        console.error(`[YOLO] Gagal trigger worker: ${err.message}`);
-        throw err;
+        logger.log("error", `[Gate ${gateId}] [UPDATE STATUS] Gagal menghubungi endpoint: ${err.message} [PAYLOAD]: ${JSON.stringify(payload)}`);
+        return null;
     }
 }
 
-async function processData(data) {
-    if (data.includes(':A') || data.includes(':R')) {
-        const trigger = data.includes(':A') ? ':A' : ':R';
-
-        // Ambil gambar dari kamera
-        // logger.log('info', `[PROCESS] Memulai pengambilan gambar untuk trigger ${trigger}...`);
-        const imagePath = await cameraHandler();
-
-        if (imagePath) {
-            // Jika berhasil ambil gambar, jalankan deteksi
-            // logger.log('info', `[PROCESS] Gambar berhasil diambil: ${imagePath}. Memulai deteksi YOLO...`);
-            // const yoloResultStr = await triggerPythonDetection(trigger, imagePath);
-            // const yoloResult = JSON.parse(yoloResultStr);
-            // logger.log('info', `[PROCESS] Hasil deteksi: ${JSON.stringify(yoloResult)}`);
-            // Anda bisa tambahkan logika lanjutan di sini (seperti API call ke backend, dsb)
-        } else {
-            logger.log('error', '[PROCESS] Gagal mengambil gambar dari kamera.');
-        }
-
-        return;
-    }
-}
-
-async function generateNoTicket(rfid = '') {
-    return new Promise(async (resolve) => {
-
-        const url = `${config.endpoint}/api/parkirMasuk`;
-        let payload;
-
-        if (rfid) {
-            payload = {
-                gate_masuk_id: config.parking_class.gate_id,
-                kartu_pelanggan: rfid
-            };
-        } else {
-            payload = {
-                gate_masuk_id: config.parking_class.gate_id,
-                golongan_id: config.parking_class.golongan_id,
-                tarif_id: config.parking_class.tarif_id
-            };
-        }
-
-        const controller = new AbortController();
-        const timeout = setTimeout(() => {
-            controller.abort();
-            resolve(null);
-        }, 30000);
-
-        try {
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload),
-                signal: controller.signal
-            });
-
-            clearTimeout(timeout);
-
-            if (response) {
-                const result = await response.json();
-
-                if (response.status === 200) {
-                    resolve(result);
-                    // logger.log("info", (result.message || "Berhasil") + " [PAYLOAD]: " + JSON.stringify(payload));
-                    return;
-                } else {
-                    if (result.status === "ERROR") {
-                        logger.log("error", result.message + " [PAYLOAD]: " + JSON.stringify(payload));
-                        resolve(result.message);
-                        return;
-                    } else {
-                        logger.log("error", result + " [PAYLOAD]: " + JSON.stringify(payload));
-                        resolve(null);
-                        return;
-                    }
-
-                }
-            } else {
-                logger.log("error", "No response from server" + " [PAYLOAD]: " + JSON.stringify(payload));
-                resolve(null);
-                return;
-            }
-
-        } catch (err) {
-            logger.log("error", err.message);
-            resolve(null);
-            return;
-
-        } finally {
-            clearTimeout(timeout);
-        }
-    });
-}
-
-module.exports = {
-    processData,
-    generateNoTicket
-};
+module.exports = { generateNoTicket, updateStatusTransaksi };

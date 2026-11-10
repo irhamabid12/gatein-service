@@ -1,21 +1,13 @@
 const net = require('net');
-const { handleReconnect } = require('./reconnect');
 const { printTicket } = require('./printer');
-const { generateNoTicket } = require('./processData');
-const { processData } = require('./processData');
+const { generateNoTicket, updateStatusTransaksi } = require('./processData');
 const logger = require('./logger');
-const config = require('../config.json');
+const { getGates, getGateConfig } = require('./configManager');
 const { cameraHandler } = require('./camera');
 const { uploadImage } = require('./upload');
 
-let client = null;
 let io = null;
-let isConnecting = false;
-let isDisconnecting = false;
-let isProccess = false;
-
-const ip = config.controller.ip;
-const port = config.controller.port;
+const sessions = new Map(); // gateId -> state koneksi
 
 function formatDate(date = new Date()) {
     const d = new Date(date);
@@ -23,288 +15,270 @@ function formatDate(date = new Date()) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+// Semua event dikirim dengan gateId agar UI bisa memfilter per gate
+function emitGate(gateId, event, data) {
+    if (io) io.emit(event, { gateId: String(gateId), data });
+}
+
+function getSession(gateId) {
+    const key = String(gateId);
+    if (!sessions.has(key)) {
+        sessions.set(key, { client: null, isConnecting: false, isDisconnecting: true, isProcess: false, timer: null });
+    }
+    return sessions.get(key);
+}
+
+function resolveGateId(gateId) {
+    if (gateId) return String(gateId);
+    const first = getGateConfig();
+    return first ? String(first.parking_class.gate_id) : null;
+}
+
 function init(socketIO) {
     io = socketIO;
     logger.init(socketIO);
-} 
+}
 
-function startConnection() {
-    isDisconnecting = false;
-    
-    if (client && !client.destroyed) {
-        console.log("Already connected");
+function startAllConnections() {
+    getGates().forEach(g => startConnection(g.parking_class.gate_id));
+}
+
+function disconnectAllConnections() {
+    getGates().forEach(g => disconnect(g.parking_class.gate_id));
+}
+
+function startConnection(gateId) {
+    const id = resolveGateId(gateId);
+    const gate = id && getGateConfig(id);
+    if (!gate) {
+        logger.log("error", `[TCP] Konfigurasi Gate ${gateId} tidak ditemukan`);
         return;
     }
 
-    if (isConnecting) {
-        console.log("Connecting... Please wait.");
+    const s = getSession(id);
+    s.isDisconnecting = false;
+    if (s.timer) { clearTimeout(s.timer); s.timer = null; }
+    if (s.client && !s.client.destroyed) return;
+    if (s.isConnecting) return;
+
+    const ip = gate.controller.ip;
+    const port = Number(gate.controller.port);
+    if (!ip || ip === '0.0.0.0') {
+        logger.log("warn", `[TCP][Gate ${id}] IP controller belum diisi, koneksi dilewati. Isi lewat Edit Config.`);
+        emitGate(id, "controller-status", "offline");
         return;
     }
+    s.isConnecting = true;
+    logger.log("info", `[TCP][Gate ${id}] Memulai koneksi ke controller ${ip}:${port}...`);
 
-    isConnecting = true;
-
-    logger.log("info", `[TCP] Memulai koneksi ke controller ${ip}:${port}...`);
-
-    client = new net.Socket();
+    const client = new net.Socket();
+    s.client = client;
 
     client.connect(port, ip, () => {
-        console.clear();
-        console.log("====================================");
-        console.log("CONNECTED TO CONTROLLER");
-        console.log(`IP: ${ip} PORT: ${port}`);
-        console.log("====================================");
-        isConnecting = false;
-
-        logger.log("info", `[TCP] Terhubung ke controller ${ip}:${port}`);
-
-        io.emit("controller-status", "online");
-        io.emit("status-device", "connected");
+        s.isConnecting = false;
+        logger.log("info", `[TCP][Gate ${id}] Terhubung ke controller ${ip}:${port}`);
+        emitGate(id, "controller-status", "online");
+        emitGate(id, "status-device", "connected");
     });
 
     client.setKeepAlive(true, 5000);
 
     client.on('data', async (data) => {
+        if (s.isDisconnecting || s.isProcess) return;
 
-        if (isDisconnecting) {
-            return;
-        }
+        // Ambil config terbaru setiap trigger agar perubahan config langsung berlaku
+        const cfg = getGateConfig(id) || gate;
+        const message = data.toString('ascii').trim();
+        const log = (msg) => emitGate(id, "log-output", `${formatDate()} - ${msg}`);
 
-        let message = data.toString('ascii');
-        message = message.trim();
-        
-        if(isProccess) {
-            return;
-        }
-
-        if (message == ":A") {
-            if (io) {
-                io.emit("log-output", `${formatDate()} - Trigger masuk dengan tiket`);
-            }
-            // processData(message);
-            
-            isProccess = true;
-
+        if (message === ":A") {
+            log("Trigger masuk dengan tiket");
+            s.isProcess = true;
             try {
-                const ticket = await generateNoTicket();
-                if (ticket != null) {
-                    const res = await printTicket(ticket.kode_parkir, false);
-
-                    if (res) {
-                        sendData("S02\r\n");
-                    } else {
-                        logger.log("error", "Print ticket failed");
-                        sendData("ER!\r\n");
+                const ticket = await generateNoTicket('', cfg);
+                if (ticket && typeof ticket === 'object') {
+                    const ok = await printTicket(ticket.kode_parkir, false, cfg);
+                    if (!ok) {
+                        logger.log("error", `[Gate ${id}] Print ticket failed for kode_parkir: ${ticket.kode_parkir}`);
+                        log(`Gagal cetak tiket (${ticket.kode_parkir}), mengupdate status transaksi...`);
+                        const updateRes = await updateStatusTransaksi(ticket.kode_parkir, 'error', cfg);
+                        if (updateRes?.message) {
+                            log(`[${updateRes.status}] ${updateRes.message}`);
+                        }
+                        sendData("ER!\r\n", id);
                         return;
                     }
-
-                    const fileName = ticket?.foto_masuk;
-                    const filePath = await cameraHandler(fileName);
-
-                    if (filePath) {
-                        await uploadImage(filePath);
-                    }
+                    sendData("S02\r\n", id);
+                    const filePath = await cameraHandler(ticket.foto_masuk, cfg);
+                    if (filePath) await uploadImage(filePath, cfg);
                 } else {
-                    logger.log("error", "Ticket not found");
-                    sendData("ER!\r\n");
+                    logger.log("error", `[Gate ${id}] Ticket not found`);
+                    sendData("ER!\r\n", id);
                 }
-                
-            }catch(err) {
-                logger.log("error", "Error: ", err);
-                sendData("ER!\r\n");
-            }finally {
-                isProccess = false;
+            } catch (err) {
+                logger.log("error", `[Gate ${id}] Error: ${err.message}`);
+                sendData("ER!\r\n", id);
+            } finally {
+                s.isProcess = false;
             }
 
         } else if (message.startsWith(":R")) {
-            
-
-            // processData(message);
-
-            if (config.parking_class.member == false) {
-                sendData("ER!\r\n");
+            if (!cfg.parking_class.member) {
+                sendData("ER!\r\n", id);
                 return;
             }
-
-            isProccess = true;
             const rfid = message.replace(/^:R/, '');
-            console.log('pelanggan ' + rfid);
-
-            if (io) {
-                io.emit("log-output", `${formatDate()} - Trigger masuk dengan kartu member, RFID: ${rfid}`);
-            }
-
+            log(`Trigger masuk dengan kartu member, RFID: ${rfid}`);
+            s.isProcess = true;
             try {
-                const ticket = await generateNoTicket(rfid);
-                if (ticket != null) {
-                    if (ticket == "Anda sudah pernah masuk") {
-                        if (io) {
-                            io.emit("log-output", `${formatDate()} - Pelanggan sudah pernah masuk`);
-                        }
-                        sendData("S03\r\n");
-                        return;
-                    }
-
-                    if (ticket == "Pelanggan tidak ditemukan") {
-                        if (io) {
-                            io.emit("log-output", `${formatDate()} - Pelanggan tidak ditemukan`);
-                        }
-                        sendData("S03\r\n");
-                        return;
-                    }
-
-                    let res = true;
-                    if (config.parking_class.print_ticket_member) {
-                        res = await printTicket(ticket.kode_parkir, config.parking_class.member ? true : false);
-                    }
-                    
-                    if (res) {
-                        sendData("S02\r\n");
-                    } else {
-                        logger.log("error", "Print ticket failed");
-                        sendData("ER!\r\n");
-                        return;
-                    }
-
-                    const fileName = ticket?.foto_masuk;
-                    const filePath = await cameraHandler(fileName);
-
-                    if (filePath) {
-                        await uploadImage(filePath);
-                    }
-                } else {
-                    logger.log("error", "Ticket not found");
-                    sendData("ER!\r\n");
+                const ticket = await generateNoTicket(rfid, cfg);
+                if (ticket === "Anda sudah pernah masuk" || ticket === "Pelanggan tidak ditemukan") {
+                    log(ticket === "Anda sudah pernah masuk" ? "Pelanggan sudah pernah masuk" : ticket);
+                    sendData("S03\r\n", id);
+                    return;
                 }
-                
-            }catch(err) {
-                logger.error("Error: ", err);
-                sendData("ER!\r\n");
-            }finally {
-                isProccess = false;
+                if (ticket && typeof ticket === 'object') {
+                    let ok = true;
+                    if (cfg.parking_class.print_ticket_member) {
+                        ok = await printTicket(ticket.kode_parkir, true, cfg);
+                    }
+                    if (!ok) {
+                        logger.log("error", `[Gate ${id}] Print ticket failed for kode_parkir: ${ticket.kode_parkir}`);
+                        log(`Gagal cetak tiket member (${ticket.kode_parkir}), mengupdate status transaksi...`);
+                        const updateRes = await updateStatusTransaksi(ticket.kode_parkir, 'error', cfg);
+                        if (updateRes?.message) {
+                            log(`[${updateRes.status}] ${updateRes.message}`);
+                        }
+                        sendData("ER!\r\n", id);
+                        return;
+                    }
+                    sendData("S02\r\n", id);
+                    const filePath = await cameraHandler(ticket.foto_masuk, cfg);
+                    if (filePath) await uploadImage(filePath, cfg);
+                } else {
+                    logger.log("error", `[Gate ${id}] Ticket not found`);
+                    sendData("ER!\r\n", id);
+                }
+            } catch (err) {
+                logger.log("error", `[Gate ${id}] Error: ${err.message}`);
+                sendData("ER!\r\n", id);
+            } finally {
+                s.isProcess = false;
             }
+
         } else if (message.startsWith(":C")) {
-            if (io) {
-                io.emit("log-output", `${formatDate()} - Kendaraan terdeteksi`);
-                setTimeout(() => {
-                    io.emit("log-output", "end process");
-                }, 2000);
-            }
-            logger.log("info", "Kendaraan terdeteksi");
+            log("Kendaraan terdeteksi");
+            setTimeout(() => emitGate(id, "log-output", "end process"), 2000);
+            logger.log("info", `[Gate ${id}] Kendaraan terdeteksi`);
         } else {
-            logger.log("warn", "Unknown message: ", message);
+            logger.log("warn", `[Gate ${id}] Unknown message: ${message}`);
         }
     });
 
     client.on('error', (err) => {
-        logger.log("error", `[TCP] Error koneksi controller ${ip}:${port}: ${err.message}`);
-
-        io.emit("controller-status", "offline"); 
+        logger.log("error", `[TCP][Gate ${id}] Error koneksi ${ip}:${port}: ${err.message}`);
+        emitGate(id, "controller-status", "offline");
     });
 
-    client.on('close', (hadError) => {
-        if (isDisconnecting) {
-            logger.log("info", "[TCP] Koneksi ditutup (disconnect manual).");
+    client.on('close', () => {
+        s.isConnecting = false;
+        if (s.client) {
+            s.client.removeAllListeners();
+            s.client.destroy();
+            s.client = null;
+        }
+        emitGate(id, "controller-status", "offline");
+        if (!s.isDisconnecting) {
+            logger.log("warn", `[TCP][Gate ${id}] Koneksi terputus. Reconnect dalam 3 detik...`);
+            s.timer = setTimeout(() => startConnection(id), 3000);
         } else {
-            logger.log("warn", `[TCP] Koneksi ke controller terputus (lost connect)${hadError ? ' karena error' : ''}. Mencoba reconnect...`);
+            logger.log("info", `[TCP][Gate ${id}] Koneksi ditutup (disconnect manual).`);
         }
-        isConnecting = false;
-        if (client) {
-            client.removeAllListeners();
-            client.destroy();
-            client = null;
-        }
-        if (!isDisconnecting) {
-            handleReconnect(startConnection, ip, port);
-        }
-
-        io.emit("controller-status", "offline"); 
     });
 }
 
-function disconnect() {
-    isDisconnecting = true;
-
-    if (client) {
-        client.destroy();
-        client = null;
-        console.log("Disconnected");
+function disconnect(gateId) {
+    const id = resolveGateId(gateId);
+    if (!id) return;
+    const s = getSession(id);
+    s.isDisconnecting = true;
+    if (s.timer) { clearTimeout(s.timer); s.timer = null; }
+    if (s.client) {
+        s.client.removeAllListeners();
+        s.client.destroy();
+        s.client = null;
     }
-
-    io.emit("status-device", "disconnected");
+    s.isConnecting = false;
+    emitGate(id, "status-device", "disconnected");
+    emitGate(id, "controller-status", "offline");
 }
 
-function getStatus() {
-    const res = {
-        ip: ip,
-        port: port,
-        connected: client && !client.destroyed,
-        connecting: isConnecting,
-        disconnecting: isDisconnecting
-    }
-
-    return res;
+// Dipanggil setelah config sebuah gate diubah (termasuk bila gate_id berganti)
+function restartConnection(newGateId, oldGateId = null) {
+    const oldId = String(oldGateId ?? newGateId);
+    disconnect(oldId);
+    if (oldId !== String(newGateId)) sessions.delete(oldId);
+    startConnection(newGateId);
 }
 
-/**
- * Kirim perintah ke controller (S02, S03, ER!, OFF, dll) dengan retry otomatis.
- * Non-blocking: pemanggil yang butuh hasil bisa memakai `await` pada return-nya
- * atau langsung memakai sendDataWithRetry.
- *
- * @param {string} message
- * @returns {Promise<boolean>} true jika berhasil terkirim
- */
-function sendData(message) {
-    return sendDataWithRetry(message);
+// Setelah config gate diubah: putuskan koneksi lama TANPA connect ulang otomatis
+function resetGateClient(newGateId, oldGateId = null) {
+    const oldId = String(oldGateId ?? newGateId);
+    disconnect(oldId);
+    if (oldId !== String(newGateId)) sessions.delete(oldId);
+    emitGate(newGateId, "status-device", "disconnected");
+    emitGate(newGateId, "controller-status", "offline");
 }
 
-/**
- * Kirim perintah ke controller (mis. buka gate) dengan percobaan ulang.
- * Bila koneksi terputus atau terjadi error saat menulis, akan mencoba reconnect
- * lalu mengirim ulang sampai `maxRetries` kali.
- *
- * @param {string} message - Perintah yang dikirim
- * @param {number} maxRetries - Jumlah percobaan maksimal
- * @param {number} delayMs - Jeda antar percobaan (ms)
- * @returns {Promise<boolean>} true jika berhasil terkirim
- */
-async function sendDataWithRetry(message, maxRetries = 3, delayMs = 1500) {
+function removeGateClient(gateId) {
+    disconnect(gateId);
+    sessions.delete(String(gateId));
+}
+
+function getStatus(gateId) {
+    const id = resolveGateId(gateId);
+    const gate = id && getGateConfig(id);
+    const s = id ? getSession(id) : null;
+    return {
+        gateId: id,
+        ip: gate?.controller?.ip,
+        port: gate?.controller?.port,
+        connected: Boolean(s?.client && !s.client.destroyed),
+        connecting: Boolean(s?.isConnecting),
+        disconnecting: Boolean(s?.isDisconnecting)
+    };
+}
+
+function sendData(message, gateId) {
+    return sendDataWithRetry(message, gateId);
+}
+
+async function sendDataWithRetry(message, gateId, maxRetries = 3, delayMs = 1500) {
+    const id = resolveGateId(gateId);
+    if (!id) return false;
+    const s = getSession(id);
     const label = JSON.stringify(message);
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            if (!client || client.destroyed) {
-                throw new Error('Controller tidak terhubung');
-            }
-
+            if (!s.client || s.client.destroyed) throw new Error('Controller tidak terhubung');
             await new Promise((resolve, reject) => {
-                client.write(message, 'ascii', (err) => (err ? reject(err) : resolve()));
+                s.client.write(message, 'ascii', (err) => (err ? reject(err) : resolve()));
             });
-
-            if (attempt > 1) {
-                logger.log("info", `[TCP] Perintah ${label} berhasil terkirim pada percobaan ke-${attempt}`);
-            }
             return true;
         } catch (err) {
-            logger.log("warn", `[TCP] Gagal kirim perintah ${label} (percobaan ${attempt}/${maxRetries}): ${err.message}`);
-
+            logger.log("warn", `[TCP][Gate ${id}] Gagal kirim ${label} (percobaan ${attempt}/${maxRetries}): ${err.message}`);
             if (attempt < maxRetries) {
-                if (!client || client.destroyed) {
-                    startConnection();
-                }
+                if (!s.client || s.client.destroyed) startConnection(id);
                 await new Promise((r) => setTimeout(r, delayMs));
             }
         }
     }
-
-    logger.log("error", `[TCP] Perintah ${label} gagal terkirim setelah ${maxRetries} percobaan`);
+    logger.log("error", `[TCP][Gate ${id}] Perintah ${label} gagal terkirim setelah ${maxRetries} percobaan`);
     return false;
 }
 
 module.exports = {
-    init,
-    startConnection,
-    disconnect,
-    getStatus,
-    sendData,
-    sendDataWithRetry
+    init, startAllConnections, disconnectAllConnections, startConnection, disconnect,
+    restartConnection, resetGateClient, removeGateClient, getStatus, sendData, sendDataWithRetry
 };

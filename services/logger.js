@@ -37,7 +37,15 @@ class SocketIOTransport extends winston.Transport {
                 }
             }
 
-            ioInstance.emit("log-output", `${formatDate()} - ${msg}`);
+            // Log yang mengandung "[Gate <id>]" hanya dikirim ke gate tersebut,
+            // sisanya (tanpa gate id) dikirim sebagai log global.
+            const text = `${formatDate()} - ${msg}`;
+            const m = String(msg).match(/\[Gate\s+([^\]\s]+)[^\]]*\]/);
+            if (m) {
+                ioInstance.emit("log-output", { gateId: String(m[1]), data: text });
+            } else {
+                ioInstance.emit("log-output", text);
+            }
         }
 
         callback();
