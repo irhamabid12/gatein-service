@@ -11,8 +11,15 @@ const CAPTURE_TIMEOUT_MS = 10000; // 10 seconds, same as C# version
  * Get the pictures directory (inside the project root as "pictures/").
  * Creates it if it doesn't exist.
  */
-function getPicturesDir() {
-    const picDir = path.join(__dirname, '..', 'pictures');
+function getPicturesDir(gateName = 'unknown-gate', date = new Date()) {
+    // Struktur: pictures/<nama-gate>/<YYYY-MM-DD>/
+    const safeGate = String(gateName || 'unknown-gate')
+        .replace(/[\\/:*?"<>|]/g, '')
+        .replace(/\s+/g, '_')
+        .trim() || 'unknown-gate';
+    const pad = (n) => String(n).padStart(2, '0');
+    const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    const picDir = path.join(__dirname, '..', 'pictures', safeGate, day);
     if (!fs.existsSync(picDir)) {
         fs.mkdirSync(picDir, { recursive: true });
     }
@@ -61,8 +68,14 @@ function resolveFileName(specificFileName) {
  * @param {string|null} specificFileName - Optional filename to save the image as.
  * @returns {Promise<string|null>} - Full path to the saved image, or null on failure.
  */
-async function cameraHandler(specificFileName = null) {
-    const config = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
+async function cameraHandler(specificFileName = null, gateIdOrConfig = null) {
+    const config = (gateIdOrConfig && typeof gateIdOrConfig === 'object' && gateIdOrConfig.camera)
+        ? gateIdOrConfig
+        : require('./configManager').getGateConfig(gateIdOrConfig);
+    if (!config) {
+        logger.log("error", "[CAMERA] Konfigurasi gate tidak ditemukan");
+        return null;
+    }
 
     const username = config.camera.username;
     const password = config.camera.password;
@@ -70,7 +83,7 @@ async function cameraHandler(specificFileName = null) {
 
     const rtspUrl  = `rtsp://${username}:${password}@${ip}:554/Streaming/Channels/101`;
 
-    const picDir   = getPicturesDir();
+    const picDir   = getPicturesDir(config.parking_class?.nama_gate);
     const fileName = resolveFileName(specificFileName);
     const fullPath = path.join(picDir, fileName);
 

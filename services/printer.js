@@ -1,6 +1,13 @@
 const net = require('net');
-const config = require('../config.json');
 const logger = require('./logger');
+const { getGateConfig } = require('./configManager');
+
+function resolveConfig(gateIdOrConfig) {
+    if (gateIdOrConfig && typeof gateIdOrConfig === 'object' && gateIdOrConfig.printer) {
+        return gateIdOrConfig;
+    }
+    return getGateConfig(gateIdOrConfig);
+}
 
 async function sendBytesToPrinter(ip, port, buffer, timeout = 5000) {
     return new Promise(resolve => {
@@ -44,9 +51,14 @@ async function sendBytesToPrinter(ip, port, buffer, timeout = 5000) {
     });
 }
 
-async function printTicket(ticketNo, isRfid = false) {
+async function printTicket(ticketNo, isRfid = false, gateIdOrConfig = null) {
+    const config = resolveConfig(gateIdOrConfig);
+    if (!config) {
+        logger.log("error", "[PRINTER] Konfigurasi gate tidak ditemukan");
+        return false;
+    }
 
-    const line = '-'.repeat(48);
+    const line = '-'.repeat(42);
 
     const chunks = [];
 
@@ -90,6 +102,10 @@ async function printTicket(ticketNo, isRfid = false) {
 
     chunks.push(ALIGN_CENTER);
     chunks.push(Buffer.from(`${line}\n`));
+    chunks.push(BOLD_ON);
+    chunks.push(Buffer.from("Pembayaran Wajib Pakai\n"));
+    chunks.push(Buffer.from("QRIS atau E-Toll\n"));
+    chunks.push(BOLD_OFF);
     chunks.push(Buffer.from("JANGAN TINGGALKAN KARCIS TANDA MASUK\n"));
     chunks.push(Buffer.from("TERIMA KASIH\n\n"));
 

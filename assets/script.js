@@ -1,174 +1,183 @@
-function printTicket(ticketNo, isRfid = false) {
-    fetch('/api/print-ticket', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ ticketNo, isRfid })
-    })
-    .then(response => response.json())
-    .then(data => {
-        alert(data.message);
-    })
-    .catch(error => {
-        console.error('Error printing ticket:', error);
-        alert('Failed to print ticket');
-    });
+const gateId = String(document.body.dataset.gateId || '');
+const initialTab = document.body.dataset.initialTab || 'current-status-view';
+const enc = encodeURIComponent(gateId);
+const VIEWS = '#current-status-view, #device-config-view, #add-gate-view';
+
+function switchTab(target, updateUrl = false) {
+    $('.sidebar-left .nav-link[data-target]').removeClass('active');
+    $(`.sidebar-left .nav-link[data-target="${target}"]`).addClass('active');
+    $(VIEWS).addClass('d-none');
+    $('#' + target).removeClass('d-none');
+    if (updateUrl) {
+        if (target === 'device-config-view') history.pushState({}, '', `/config/${enc}`);
+        else if (target === 'current-status-view') history.pushState({}, '', `/gate/${enc}`);
+    }
 }
+if (initialTab !== 'current-status-view') switchTab(initialTab);
 
 const socket = io();
 
+function postJson(url, body) {
+    return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {})
+    }).then(r => r.json());
+}
+
+function printTicket(ticketNo, isRfid = false) {
+    postJson(`/api/print-ticket/${enc}`, { ticketNo, isRfid })
+        .then(d => alert(d.message))
+        .catch(() => alert('Failed to print ticket'));
+}
+
+function loadGates() {
+    fetch('/api/gates').then(r => r.json()).then(d => {
+        if (!d.success) return;
+        const sel = $('#gate-selector').empty().append($('<option>').val('__server__').text('Current Status (Server)'));
+        const list = $('#sidebar-gate-list').empty();
+        d.gates.forEach(g => {
+            const id = String(g.gate_id);
+            sel.append($('<option>').val(id).text(`${g.nama_gate} (${id})`).prop('selected', id === gateId));
+            list.append($('<a>').attr('href', `/gate/${encodeURIComponent(id)}`)
+                .css({ fontSize: '12px', background: id === gateId ? '#004d73' : '' })
+                .text(`${g.nama_gate} (${id})`));
+        });
+        $('#btn-delete-gate').prop('disabled', d.gates.length <= 1);
+    });
+}
+
+$(document).on('change', '#gate-selector', function () {
+    if ($(this).val() === '__server__') { location.href = '/'; return; }
+    const id = encodeURIComponent($(this).val());
+    const inConfig = !$('#device-config-view').hasClass('d-none');
+    location.href = inConfig ? `/config/${id}` : `/gate/${id}`;
+});
 
 function loadConfig() {
-    fetch('/api/get-config')
-    .then(response => response.json())
-    .then(config => {
-        $('input[name="DEVICE_NAME"]').val(config.device.name);
-        $('input[name="CONTROLLER_IP"]').val(config.controller.ip);
-        $('input[name="CONTROLLER_PORT"]').val(config.controller.port);
-        $('input[name="PRINTER_IP"]').val(config.printer.ip);
-        $('input[name="PRINTER_PORT"]').val(config.printer.port);
-        $('input[name="CAMERA_IP"]').val(config.camera.ip);
-        $('input[name="CAMERA_PORT"]').val(config.camera.port);
-        $('input[name="CAMERA_USERNAME"]').val(config.camera.username);
-        $('input[name="CAMERA_PASSWORD"]').val(config.camera.password);
-        $('input[name="ENDPOINT_SERVER"]').val(config.endpoint);
-        $('input[name="NAMA_GOLONGAN"]').val(config.parking_class.nama_golongan);
-        $('input[name="GOLONGAN_ID"]').val(config.parking_class.golongan_id);
-        $('input[name="NAMA_TARIF"]').val(config.parking_class.nama_tarif);
-        $('input[name="TARIF_ID"]').val(config.parking_class.tarif_id);
-        $('input[name="NAMA_GATE"]').val(config.parking_class.nama_gate);
-        $('input[name="GATE_ID"]').val(config.parking_class.gate_id);
-        $('input[name="MEMBER"]').prop('checked', config.parking_class.member);
-        $('input[name="CETAK_TIKET_MEMBER"]').prop('checked', config.parking_class.print_ticket_member);
+    fetch(`/api/get-config/${enc}`).then(r => r.json()).then(c => {
+        if (!c.device) return;
+        const f = $('#form-device-config');
+        const set = (n, v) => f.find(`input[name="${n}"]`).val(v);
+        set('ORIGINAL_GATE_ID', c.parking_class.gate_id);
+        set('DEVICE_NAME', c.device.name);
+        set('CONTROLLER_IP', c.controller.ip);
+        set('CONTROLLER_PORT', c.controller.port);
+        set('PRINTER_IP', c.printer.ip);
+        set('PRINTER_PORT', c.printer.port);
+        set('CAMERA_IP', c.camera.ip);
+        set('CAMERA_PORT', c.camera.port);
+        set('CAMERA_USERNAME', c.camera.username);
+        set('CAMERA_PASSWORD', c.camera.password);
+        set('ENDPOINT_SERVER', c.endpoint);
+        set('NAMA_GOLONGAN', c.parking_class.nama_golongan);
+        set('GOLONGAN_ID', c.parking_class.golongan_id);
+        set('NAMA_TARIF', c.parking_class.nama_tarif);
+        set('TARIF_ID', c.parking_class.tarif_id);
+        set('NAMA_GATE', c.parking_class.nama_gate);
+        set('GATE_ID', c.parking_class.gate_id);
+        f.find('input[name="MEMBER"]').prop('checked', !!c.parking_class.member);
+        f.find('input[name="CETAK_TIKET_MEMBER"]').prop('checked', !!c.parking_class.print_ticket_member);
     });
 }
 
 loadConfig();
+loadGates();
+document.getElementById('val-ip').innerText = location.hostname;
 
-// Get PC server IP
-document.getElementById('val-ip').innerText = window.location.hostname;
+function formToObject(form) {
+    const o = {};
+    $(form).serializeArray().forEach(i => o[i.name] = i.value);
+    return o;
+}
 
-$('#btn-connect').on('click', function () {
-    fetch('/connect', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        }
-    })
-});
-
-$('#btn-disconnect').on('click', function () {
-    fetch('/disconnect', {
-        method: 'POST'
-    })
-});
-
-// SPA Navigation
-$('.nav-link').on('click', function(e) {
+// Navigasi tab (SPA)
+$('.sidebar-left .nav-link[data-target]').on('click', function (e) {
     e.preventDefault();
-    $('.nav-link').removeClass('active');
-    $(this).addClass('active');
-
-    const target = $(this).data('target');
-    $('#current-status-view, #device-config-view').addClass('d-none');
-    $('#' + target).removeClass('d-none');
+    switchTab($(this).data('target'), true);
 });
 
-// Device Config Submit
-$('#form-device-config').on('submit', function(e) {
+// Simpan config gate ini
+$('#form-device-config').on('submit', function (e) {
     e.preventDefault();
-    const formData = $(this).serializeArray();
-    const data = {};
-    formData.forEach(item => data[item.name] = item.value);
-    // console.log(data);
-    // return;
-    fetch('/api/config', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(data)
-    })
-    .then(res => res.json())
-    .then(data => {
-        alert(data.message);
-        if (data.success) {
-            loadConfig();
-        }
-    })
-    .catch(err => {
-        alert('Failed to save configuration');
+    postJson(`/api/config/${enc}`, formToObject(this)).then(r => {
+        alert(r.message);
+        if (r.success) location.href = `/gate/${encodeURIComponent(r.gateId)}`;
+    }).catch(() => alert('Failed to save configuration'));
+});
+
+// Tambah gate baru
+$('#form-add-gate').on('submit', function (e) {
+    e.preventDefault();
+    postJson('/api/gates', formToObject(this)).then(r => {
+        alert(r.message);
+        if (r.success) location.href = `/gate/${encodeURIComponent(r.gateId)}`;
+    }).catch(() => alert('Gagal menambahkan gate'));
+});
+
+// Hapus gate
+$('#btn-delete-gate').on('click', function () {
+    if (!confirm(`Hapus Gate ID "${gateId}"?`)) return;
+    fetch(`/api/gates/${enc}`, { method: 'DELETE' }).then(r => r.json()).then(r => {
+        alert(r.message);
+        if (r.success) location.href = r.redirectGateId ? `/gate/${encodeURIComponent(r.redirectGateId)}` : '/';
     });
 });
 
-$('#btn-reset').on('click', function () {
-    fetch('/reset', { method: 'POST' });
-});
+$('#btn-connect').on('click', () => postJson(`/connect/${enc}`));
+$('#btn-disconnect').on('click', () => postJson(`/disconnect/${enc}`));
+$('#btn-reset').on('click', () => postJson(`/reset/${enc}`));
+$('#btn-open-gate').on('click', () => postJson(`/open-gate/${enc}`));
+$('#btn-close-gate').on('click', () => postJson(`/close-gate/${enc}`));
 
-$('#btn-open-gate').on('click', function () {
-    fetch('/open-gate', { method: 'POST' });
-});
-
-$('#btn-close-gate').on('click', function () {
-    fetch('/close-gate', { method: 'POST' });
-});
-
-const updateStatus = (id, status) => {
-    const el = document.getElementById(id);
-    if (el) {
-        if (status === "online") {
-            el.textContent = "Online";
-            el.classList.remove("bg-danger");
-            el.classList.add("bg-success");
-        } else if(status === "offline") {
-            el.textContent = "Offline";
-            el.classList.remove("bg-success");
-            el.classList.add("bg-danger");
-        } else if(status === "connected") {
-            el.textContent = "Connected";
-            el.classList.remove("bg-danger");
-            el.classList.add("bg-success");
-        } else if(status === "disconnected") {
-            el.textContent = "Disconnected";
-            el.classList.remove("bg-success");
-            el.classList.add("bg-danger");
-        }
-    }
+const STATUS = {
+    online: ['Online', true], offline: ['Offline', false],
+    connected: ['Connected', true], disconnected: ['Disconnected', false]
 };
+function updateStatus(id, status) {
+    const el = document.getElementById(id);
+    const s = STATUS[status];
+    if (!el || !s) return;
+    el.textContent = s[0];
+    el.classList.toggle('bg-success', s[1]);
+    el.classList.toggle('bg-danger', !s[1]);
+}
 
-socket.on("status-device", (status) => updateStatus("status-device", status));
-socket.on("controller-status", (status) => updateStatus("controller-status", status));
-socket.on("printer-status", (status) => updateStatus("printer-status", status));
-socket.on("camera-status", (status) => updateStatus("camera-status", status));
-socket.on("endpoint-status", (status) => updateStatus("endpoint-status", status));
-socket.on("pingData", (msg) => {
-    document.getElementById("controller-latency").textContent = `\ (${msg.latencyController !== 'unknown' ? msg.latencyController : '0'} ms)`;
-    document.getElementById("printer-latency").textContent = `\ (${msg.latencyPrinter !== 'unknown' ? msg.latencyPrinter : '0'} ms)`;
-    document.getElementById("camera-latency").textContent = `\ (${msg.latencyCamera !== 'unknown' ? msg.latencyCamera : '0'} ms)`;
-    document.getElementById("endpoint-latency").textContent = `\ (${msg.latencyEndpoint !== 'unknown' ? msg.latencyEndpoint : '0'} ms)`;
-});
-
-socket.on("log-output", (msg) => {
-    const logEl = document.getElementById("log-output");
-    if (logEl) {
-        if (msg.includes('end process')) {
-            logEl.value = "";
-            return;
-        }
-
-        logEl.value += (logEl.value ? "\n" : "") + msg;
-        logEl.scrollTop = logEl.scrollHeight;
-    }
-});
-
-$('#toggle-password').click(function () {
-    const input = $(this).parent().find('input');
-    if (input.attr('type') === 'password') {
-        input.attr('type', 'text');
-        $(this).html('<i class="bi bi-eye-fill"></i>');
+// Hanya proses event milik gate yang sedang dibuka
+function scoped(payload, cb) {
+    if (payload && typeof payload === 'object' && payload.gateId !== undefined) {
+        if (String(payload.gateId) === gateId) cb(payload.data);
     } else {
-        input.attr('type', 'password');
-        $(this).html('<i class="bi bi-eye-slash-fill"></i>');
+        cb(payload);
     }
+}
+
+['status-device', 'controller-status', 'printer-status', 'camera-status', 'endpoint-status'].forEach(ev =>
+    socket.on(ev, p => scoped(p, st => updateStatus(ev, st))));
+
+socket.on('pingData', (m) => {
+    if (m.gateId && String(m.gateId) !== gateId) return;
+    const ms = v => ` (${v !== 'unknown' ? v : '0'} ms)`;
+    $('#controller-latency').text(ms(m.latencyController));
+    $('#printer-latency').text(ms(m.latencyPrinter));
+    $('#camera-latency').text(ms(m.latencyCamera));
+    $('#endpoint-latency').text(ms(m.latencyEndpoint));
 });
+
+socket.on('log-output', (p) => scoped(p, (msg) => {
+    if (typeof msg !== 'string') return;
+    const el = document.getElementById('log-output');
+    if (!el) return;
+    if (msg.includes('end process')) { el.value = ''; return; }
+    el.value += (el.value ? '\n' : '') + msg;
+    el.scrollTop = el.scrollHeight;
+}));
+
+$(document).on('click', '.toggle-password', function () {
+    const input = $(this).parent().find('input');
+    const hidden = input.attr('type') === 'password';
+    input.attr('type', hidden ? 'text' : 'password');
+    $(this).html(`<i class="bi bi-eye${hidden ? '' : '-slash'}-fill"></i>`);
+});
+
+$('#btn-edit-config').on('click', () => switchTab('device-config-view', true));

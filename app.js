@@ -1,200 +1,230 @@
 const path = require('path');
 const fs = require('fs');
-const configPath = path.join(__dirname, 'config.json');
-const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+const express = require('express');
+const http = require('http');
+const ping = require('ping');
 
+const {
+    loadFullConfig, getGates, getGateConfig,
+    addGateConfig, updateGateConfig, deleteGateConfig
+} = require('./services/configManager');
 const tcpClient = require('./services/tcpClient');
 const monitor = require('./services/monitor');
 const logger = require('./services/logger');
 const { printTicket } = require('./services/printer');
-const express = require('express');
-const http = require('http');
+const { getServerStats } = require('./services/serverStats');
+
 const app = express();
 const server = http.createServer(app);
 const io = require('socket.io')(server);
-const ping = require('ping');
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use('/assets', express.static(path.join(__dirname, 'assets')));
+app.use('/assets', express.static(path.join(__dirname, 'assets'), { etag: false, lastModified: false, setHeaders: (res) => res.setHeader('Cache-Control', 'no-store') }));
 app.use('/view', express.static(path.join(__dirname, 'view')));
 
-const port = config.device.port || 3002;
+const port = loadFullConfig().server?.port || 3002;
 
 logger.init(io);
 tcpClient.init(io);
+// Saat pertama kali service dijalankan, seluruh gate dalam kondisi disconnect (tidak auto-connect)
+tcpClient.disconnectAllConnections();
 monitor.init(io);
-
-tcpClient.startConnection();
-
 require('./services/cleanup').startCleanupSchedule();
 
+const gateIdOf = (req) => req.params.gateId || req.query.gateId || req.body?.gateId || null;
 
-app.post('/connect', (req, res) => {
-    tcpClient.startConnection();
+// Pastikan gate ada; kalau tidak, balas 404
+function withGate(handler) {
+    return (req, res) => {
+        const gate = getGateConfig(gateIdOf(req));
+        if (!gate) return res.status(404).json({ success: false, message: `Gate "${gateIdOf(req)}" tidak ditemukan` });
+        return handler(req, res, gate, String(gate.parking_class.gate_id));
+    };
+}
 
-    res.json({ message: `Connecting to ${config.controller.ip}:${config.controller.port}` });
+// ---------- Status server service ----------
+app.get('/api/server-status', (req, res) => {
+    const gates = getGates();
+    const connected = gates.filter(g => tcpClient.getStatus(g.parking_class.gate_id).connected).length;
+    res.json({
+        success: true,
+        ...getServerStats(),
+        socketClients: io.engine.clientsCount,
+        gates: { total: gates.length, controllerActive: connected }
+    });
 });
 
-// endpoint disconnect
-app.post('/disconnect', (req, res) => {
-    tcpClient.disconnect();
-    res.json({ message: 'Disconnected' });
+// ---------- Manajemen gate ----------
+app.get('/api/gates', (req, res) => {
+    const gates = getGates().map(g => ({
+        gate_id: g.parking_class.gate_id,
+        nama_gate: g.parking_class.nama_gate,
+        device_name: g.device?.name,
+        status: tcpClient.getStatus(g.parking_class.gate_id)
+    }));
+    res.json({ success: true, gates });
 });
 
-app.post('/reset', (req, res) => {
-    tcpClient.sendData("ER!\r\n");
-    res.json({ message: 'Reset command sent' });
-});
-
-app.post('/open-gate', async (req, res) => {
-    const ok = await tcpClient.sendDataWithRetry("ON!\r\n");
-    if (ok) {
-        res.json({ message: 'Open gate command sent' });
-    } else {
-        res.status(503).json({ message: 'Failed to send open gate command after retries' });
+app.post('/api/gates', (req, res) => {
+    try {
+        const gate = addGateConfig(req.body);
+        const id = gate.parking_class.gate_id;
+        // Tidak auto-connect: connect/disconnect dilakukan manual dari dashboard gate
+        monitor.checkSingleGate(gate);
+        res.json({ success: true, message: `Gate "${gate.parking_class.nama_gate}" (ID: ${id}) berhasil ditambahkan`, gateId: id });
+    } catch (e) {
+        res.status(400).json({ success: false, message: e.message });
     }
 });
 
-app.post('/close-gate', (req, res) => {
-    tcpClient.sendData("OFF\r\n");
-    res.json({ message: 'Close gate command sent' });
+app.delete('/api/gates/:gateId', (req, res) => {
+    try {
+        const removed = deleteGateConfig(req.params.gateId);
+        tcpClient.removeGateClient(req.params.gateId);
+        res.json({
+            success: true,
+            message: `Gate "${removed.parking_class.nama_gate}" dihapus`,
+            redirectGateId: getGates()[0]?.parking_class?.gate_id || null
+        });
+    } catch (e) {
+        res.status(400).json({ success: false, message: e.message });
+    }
 });
 
-app.post('/api/print-ticket', async (req, res) => {
-    const { ticketNo, isRfid } = req.body;
+// ---------- Kontrol per gate (tanpa :gateId = gate pertama) ----------
+app.post(['/connect', '/connect/:gateId'], withGate((req, res, g, id) => {
+    tcpClient.startConnection(id);
+    res.json({ message: `[Gate ${id}] Connecting to ${g.controller.ip}:${g.controller.port}` });
+}));
+
+app.post(['/disconnect', '/disconnect/:gateId'], withGate((req, res, g, id) => {
+    tcpClient.disconnect(id);
+    res.json({ message: `[Gate ${id}] Disconnected` });
+}));
+
+app.post(['/reset', '/reset/:gateId'], withGate((req, res, g, id) => {
+    tcpClient.sendData("ER!\r\n", id);
+    res.json({ message: 'Reset command sent' });
+}));
+
+app.post(['/open-gate', '/open-gate/:gateId'], withGate(async (req, res, g, id) => {
+    const ok = await tcpClient.sendDataWithRetry("ON!\r\n", id);
+    if (ok) res.json({ message: 'Open gate command sent' });
+    else res.status(503).json({ message: 'Failed to send open gate command after retries' });
+}));
+
+app.post(['/close-gate', '/close-gate/:gateId'], withGate((req, res, g, id) => {
+    tcpClient.sendData("OFF\r\n", id);
+    res.json({ message: 'Close gate command sent' });
+}));
+
+app.post(['/api/print-ticket', '/api/print-ticket/:gateId'], withGate(async (req, res, g) => {
     try {
-        const success = await printTicket(ticketNo, isRfid);
-        if (success) {
-            res.json({ success: true, message: 'Ticket printed successfully' });
-        } else {
-            res.json({ success: false, message: 'Failed to print ticket' });
-        }
-    } catch (error) {
-        console.error('Print ticket error:', error);
+        const ok = await printTicket(req.body.ticketNo, req.body.isRfid, g);
+        res.json({ success: ok, message: ok ? 'Ticket printed successfully' : 'Failed to print ticket' });
+    } catch (e) {
+        console.error('Print ticket error:', e);
         res.status(500).json({ success: false, message: 'Internal server error while printing ticket' });
     }
-});
+}));
 
-app.get('/api/config', (req, res) => {
-    const currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    res.json(currentConfig);
-});
+app.get(['/status', '/status/:gateId'], withGate((req, res, g, id) => {
+    res.json(tcpClient.getStatus(id));
+}));
 
-app.get('/api/get-config', (req, res) => {
-    const currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    res.json(currentConfig);
-});
+// ---------- Konfigurasi per gate ----------
+app.get(['/api/config', '/api/config/:gateId', '/api/get-config', '/api/get-config/:gateId'],
+    withGate((req, res, g) => res.json(g)));
 
-app.post('/api/config', (req, res) => {
-    const data = req.body;
-    const currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+app.post(['/api/config', '/api/config/:gateId'], withGate((req, res, g, oldId) => {
+    try {
+        const updated = updateGateConfig(oldId, req.body);
+        const newId = updated.parking_class.gate_id;
+        // Putuskan koneksi lama gate ini saja (config berubah); koneksi ulang dilakukan manual
+        tcpClient.resetGateClient(newId, oldId);
+        monitor.checkSingleGate(updated);
+        res.json({
+            success: true,
+            message: `Konfigurasi Gate "${updated.parking_class.nama_gate}" (ID: ${newId}) disimpan`,
+            gateId: newId
+        });
+    } catch (e) {
+        res.status(400).json({ success: false, message: e.message });
+    }
+}));
 
-    if (data.DEVICE_NAME !== undefined) currentConfig.device.name = data.DEVICE_NAME;
-    if (data.IP_ADDRESS !== undefined) currentConfig.device.ip = data.IP_ADDRESS;
-    if (data.PORT !== undefined) currentConfig.device.port = data.PORT;
-
-    if (data.CONTROLLER_IP !== undefined) currentConfig.controller.ip = data.CONTROLLER_IP;
-    if (data.CONTROLLER_PORT !== undefined) currentConfig.controller.port = data.CONTROLLER_PORT;
-
-    if (data.PRINTER_IP !== undefined) currentConfig.printer.ip = data.PRINTER_IP;
-    if (data.PRINTER_PORT !== undefined) currentConfig.printer.port = data.PRINTER_PORT;
-
-    if (data.CAMERA_IP !== undefined) currentConfig.camera.ip = data.CAMERA_IP;
-    if (data.CAMERA_PORT !== undefined) currentConfig.camera.port = data.CAMERA_PORT;
-    if (data.CAMERA_USERNAME !== undefined) currentConfig.camera.username = data.CAMERA_USERNAME;
-    if (data.CAMERA_PASSWORD !== undefined) currentConfig.camera.password = data.CAMERA_PASSWORD;
-
-    if (data.ENDPOINT_SERVER !== undefined) currentConfig.endpoint = data.ENDPOINT_SERVER;
-
-    if (data.NAMA_GOLONGAN !== undefined) currentConfig.parking_class.nama_golongan = data.NAMA_GOLONGAN;
-    if (data.GOLONGAN_ID !== undefined) currentConfig.parking_class.golongan_id = data.GOLONGAN_ID;
-    if (data.NAMA_TARIF !== undefined) currentConfig.parking_class.nama_tarif = data.NAMA_TARIF;
-    if (data.TARIF_ID !== undefined) currentConfig.parking_class.tarif_id = data.TARIF_ID;
-    if (data.NAMA_GATE !== undefined) currentConfig.parking_class.nama_gate = data.NAMA_GATE;
-    if (data.GATE_ID !== undefined) currentConfig.parking_class.gate_id = data.GATE_ID;
-    data.MEMBER !== undefined ? currentConfig.parking_class.member = true : currentConfig.parking_class.member = false;
-    data.CETAK_TIKET_MEMBER !== undefined ? currentConfig.parking_class.print_ticket_member = true : currentConfig.parking_class.print_ticket_member = false;
-
-    fs.writeFileSync(configPath, JSON.stringify(currentConfig, null, 2));
-    res.json({ success: true, message: 'Configuration saved! Please restart the device/app to fully apply changes.' });
-
-    // Optionally exit after short delay to let nodemon restart it
-    setTimeout(() => process.exit(0), 1000);
-});
-
-
-
-// cek status
-app.get('/status', (req, res) => {
-    res.json({
-        connected: tcpClient.getStatus()
-    });
-});
-
-app.get('/', (req, res) => {
+// ---------- Halaman web ----------
+function renderDashboard(req, res, gateId, tab) {
+    const gate = getGateConfig(gateId);
+    if (!gate) {
+        return res.status(404).send(`<h3>Gate ID "${String(gateId).replace(/[<>&"]/g, '')}" tidak ditemukan</h3><a href="/">Kembali ke dashboard</a>`);
+    }
+    const pc = gate.parking_class;
+    const vars = {
+        DEVICE_NAME: gate.device?.name || 'Unknown Device',
+        IP_ADDRESS: gate.device?.ip || '0.0.0.0',
+        CONTROLLER_IP: gate.controller?.ip || '0.0.0.0',
+        CONTROLLER_PORT: gate.controller?.port || '0',
+        PRINTER_IP: gate.printer?.ip || '0.0.0.0',
+        PRINTER_PORT: gate.printer?.port || '0',
+        CAMERA_IP: gate.camera?.ip || '0.0.0.0',
+        CAMERA_PORT: gate.camera?.port || '0',
+        ENDPOINT_SERVER: gate.endpoint || '',
+        NAMA_GOLONGAN: pc.nama_golongan || '-',
+        NAMA_TARIF: pc.nama_tarif || '-',
+        NAMA_GATE: pc.nama_gate || '-',
+        GATE_ID: String(pc.gate_id),
+        INITIAL_TAB: tab,
+        MEMBER: pc.member ? 'Aktif' : 'Inactive',
+        CETAK_TIKET_MEMBER: pc.print_ticket_member ? 'Aktif' : 'Inactive'
+    };
     let html = fs.readFileSync(path.join(__dirname, 'view', 'index.html'), 'utf8');
-    const deviceName = config.device.name || 'Unknown Device';
-    const ipAddress = config.device.ip || '0.0.0.0';
-    const controllerIP = config.controller.ip || '0.0.0.0';
-    const controllerPort = config.controller.port || '0';
-    const printerIP = config.printer.ip || '0.0.0.0';
-    const printerPort = config.printer.port || '0';
-    const cameraIP = config.camera.ip || '0.0.0.0';
-    const cameraPort = config.camera.port || '0';
-    const endpointServer = config.endpoint || 'localhost:3000';
-    const namaGolongan = config.parking_class.nama_golongan || 'Unknown Golongan';
-    const namaTarif = config.parking_class.nama_tarif || 'Unknown Tarif';
-    const namaGate = config.parking_class.nama_gate || 'Unknown Gate';
-    const gateId = config.parking_class.gate_id || 'Unknown Gate ID';
-    
-    html = html.replaceAll('{{DEVICE_NAME}}', deviceName);
-    html = html.replaceAll('{{IP_ADDRESS}}', ipAddress);
-    html = html.replaceAll('{{CONTROLLER_IP}}', controllerIP);
-    html = html.replaceAll('{{CONTROLLER_PORT}}', controllerPort);
-    html = html.replaceAll('{{PRINTER_IP}}', printerIP);
-    html = html.replaceAll('{{PRINTER_PORT}}', printerPort);
-    html = html.replaceAll('{{CAMERA_IP}}', cameraIP);
-    html = html.replaceAll('{{CAMERA_PORT}}', cameraPort);
-    html = html.replaceAll('{{ENDPOINT_SERVER}}', endpointServer);
-    html = html.replaceAll('{{NAMA_GOLONGAN}}', namaGolongan);
-    html = html.replaceAll('{{NAMA_TARIF}}', namaTarif);
-    html = html.replaceAll('{{NAMA_GATE}}', namaGate);
-    html = html.replaceAll('{{GATE_ID}}', gateId);
-    html = html.replaceAll('{{MEMBER}}', config.parking_class.member ? 'Aktif' : 'Inactive');
-    html = html.replaceAll('{{CETAK_TIKET_MEMBER}}', config.parking_class.print_ticket_member ? 'Aktif' : 'Inactive');
+    for (const [k, v] of Object.entries(vars)) html = html.replaceAll(`{{${k}}}`, v);
     res.send(html);
+}
+
+// Dashboard server (hanya status server service)
+app.get(['/', '/server'], (req, res) => {
+    res.sendFile(path.join(__dirname, 'view', 'server.html'));
 });
 
-app.get('/index', (req, res) => {
-    res.redirect('/');
+// Form tambah gate (memakai halaman gate pertama sebagai kerangka)
+app.get('/add-gate', (req, res) => {
+    const first = getGates()[0];
+    renderDashboard(req, res, first?.parking_class?.gate_id, 'add-gate-view');
 });
+app.get('/index', (req, res) => res.redirect('/'));
 
-server.listen(port, () => {
-    console.log(`API running on port ${port}`);
-});
+// Route config berdasarkan gate id
+app.get(['/config/:gateId', '/gate/:gateId/config'], (req, res) =>
+    renderDashboard(req, res, req.params.gateId, 'device-config-view'));
+app.get('/gate/:gateId', (req, res) =>
+    renderDashboard(req, res, req.params.gateId, 'current-status-view'));
 
-io.on('connection', (socket) => {
-  console.log('client connected');
+server.listen(port, () => console.log(`Multi-Gate service running on port ${port}`));
 
-  setInterval(async () => {
-    const url = config.endpoint;
-    const host = url.replace('http://', '').replace('https://', '');
-    const res = await ping.promise.probe(config.controller.ip);
-    const resPrinter = await ping.promise.probe(config.printer.ip);
-    const resCamera = await ping.promise.probe(config.camera.ip);
-    const resEndpoint = await ping.promise.probe(host);
+// Satu interval global untuk ping semua gate
+setInterval(async () => {
+    for (const g of getGates()) {
+        try {
+            const host = (g.endpoint || '').replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
+            const [c, p, cam, ep] = await Promise.all([
+                ping.promise.probe(g.controller?.ip),
+                ping.promise.probe(g.printer?.ip),
+                ping.promise.probe(g.camera?.ip),
+                host ? ping.promise.probe(host) : Promise.resolve({ time: 'unknown', alive: false })
+            ]);
+            io.emit('pingData', {
+                gateId: String(g.parking_class.gate_id),
+                time: new Date(),
+                latencyController: c.time, aliveController: c.alive,
+                latencyPrinter: p.time, alivePrinter: p.alive,
+                latencyCamera: cam.time, aliveCamera: cam.alive,
+                latencyEndpoint: ep.time, aliveEndpoint: ep.alive
+            });
+        } catch (e) { /* abaikan error ping sesaat */ }
+    }
+}, 2000);
 
-    socket.emit('pingData', {
-      time: new Date(),
-      latencyController: res.time,
-      aliveController: res.alive,
-      latencyPrinter: resPrinter.time,
-      alivePrinter: resPrinter.alive,
-      latencyCamera: resCamera.time,
-      aliveCamera: resCamera.alive,
-      latencyEndpoint: resEndpoint.time,
-      aliveEndpoint: resEndpoint.alive
-    });
-  }, 2000);
-});
+io.on('connection', () => monitor.runMonitor());

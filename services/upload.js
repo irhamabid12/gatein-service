@@ -10,7 +10,7 @@ const logger = require('./logger');
  * @param {string} filePath - Full path to the image file.
  * @returns {Promise<any|null>} - Returns the JSON response from the server, or null if failed.
  */
-async function uploadImage(filePath) {
+async function uploadImage(filePath, gateIdOrConfig = null) {
     try {
         if (!fs.existsSync(filePath)) {
             logger.log("error", `[UPLOAD] File does not exist: ${filePath}`);
@@ -18,8 +18,13 @@ async function uploadImage(filePath) {
         }
 
         // Read config to get the base API URL
-        const configPath = path.join(__dirname, '..', 'config.json');
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const config = (gateIdOrConfig && typeof gateIdOrConfig === 'object' && gateIdOrConfig.endpoint)
+            ? gateIdOrConfig
+            : require('./configManager').getGateConfig(gateIdOrConfig);
+        if (!config) {
+            logger.log("error", "[UPLOAD] Konfigurasi gate tidak ditemukan");
+            return null;
+        }
         
         // Use endpoint as App.ApiBaseUrl
         const url = `${config.endpoint}/api/parkirMasuk/upload-foto-kendaraan`;
